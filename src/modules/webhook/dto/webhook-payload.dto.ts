@@ -1,3 +1,4 @@
+import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsNotEmpty, IsObject, IsOptional, IsEnum } from 'class-validator';
 
 export enum WebhookEventType {
@@ -14,22 +15,48 @@ export enum NotificationChannel {
 }
 
 export class WebhookPayloadDto {
+  @ApiProperty({
+    description: 'Unique identifier for the webhook',
+    example: 22,
+  })
   @IsString()
-  @IsNotEmpty()
+   @IsNotEmpty()
   id: string;
 
+  @ApiProperty({
+    description: 'Type of the webhook event',
+    example: WebhookEventType.ORDER_CREATE,
+  })
   @IsEnum(WebhookEventType)
   @IsNotEmpty()
   event_type: WebhookEventType;
 
+  @ApiProperty({
+    description: 'Data associated with the webhook event',
+    example: {
+      transactionId: 'TXN_123456',
+      amount: 100.00,
+      customerName: 'John Doe',
+      customerPhone: '+1234567890',
+      customerEmail: 'john.doe@example.com',
+    },
+  })
   @IsObject()
   @IsNotEmpty()
   data: any;
 
+  @ApiProperty({
+    description: 'Timestamp of the webhook event',
+    example: new Date().toISOString(),
+  })
   @IsString()
   @IsNotEmpty()
   timestamp: string;
 
+  @ApiProperty({
+    description: 'Source of the webhook event',
+    example: 'pos_system',
+  })
   @IsString()
   @IsOptional()
   source?: string;
