@@ -16,7 +16,7 @@ import {
 } from './dto/webhook-payload.dto';
 
 // Correct BetterQueue import
-const BetterQueue = require('better-queue');
+import BetterQueue from 'better-queue';
 
 @Injectable()
 export class QueueService implements OnModuleInit, OnModuleDestroy {
