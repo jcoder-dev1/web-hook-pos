@@ -7,16 +7,16 @@ import {
   HttpStatus, 
   BadRequestException,
   UnauthorizedException,
-  Logger
+  Logger,
 } from '@nestjs/common';
 import { WebhookPayloadDto } from './dto/webhook-payload.dto';
-import { WebhookService } from './webhook.service';
+import { QueueService } from './webhook.service';
 
 @Controller('webhooks')
 export class WebhookController {
   private readonly logger = new Logger(WebhookController.name);
 
-  constructor(private readonly webhookService: WebhookService) {}
+  constructor(private readonly webhookService: QueueService) {}
 
   @Post('pos')
   @HttpCode(HttpStatus.OK)
@@ -29,10 +29,14 @@ export class WebhookController {
 
     try {
       // Validate webhook signature/authorization
-      await this.webhookService.validateWebhook(payload, signature, authorization);
+      await this.webhookService.validateWebhook(
+        payload,
+        signature,
+        authorization,
+      );
 
       // Immediately enqueue for processing
-      await this.webhookService.enqueueNotificationJobs(payload);
+      this.webhookService.enqueueNotificationJobs(payload);
 
       this.logger.log(`Successfully enqueued webhook: ${payload.id}`);
       
@@ -40,11 +44,16 @@ export class WebhookController {
         success: true,
         message: 'Webhook received and queued for processing',
         webhookId: payload.id,
+        receivedData: payload,
+        timestamp: new Date().toISOString(),
       };
     } catch (error) {
       this.logger.error(`Failed to process webhook ${payload.id}:`, error);
       
-      if (error instanceof UnauthorizedException || error instanceof BadRequestException) {
+      if (
+        error instanceof UnauthorizedException ||
+        error instanceof BadRequestException
+      ) {
         throw error;
       }
       

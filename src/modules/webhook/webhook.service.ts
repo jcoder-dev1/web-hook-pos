@@ -1,22 +1,75 @@
-import { Injectable, UnauthorizedException, BadRequestException, Logger } from '@nestjs/common';
-import { InjectQueue } from '@nestjs/bullmq';
-import { Queue } from 'bullmq';
-import * as crypto from 'crypto';
-import { WebhookPayloadDto, NotificationJobDto, WebhookEventType, NotificationChannel } from './dto/webhook-payload.dto';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  UnauthorizedException,
+} from '@nestjs/common';
+
+import { ProcessorService } from './processors/notification.processor';
+import {
+  NotificationChannel,
+  NotificationJobDto,
+  WebhookEventType,
+  WebhookPayloadDto,
+} from './dto/webhook-payload.dto';
+
+// Correct BetterQueue import
+const BetterQueue = require('better-queue');
 
 @Injectable()
-export class WebhookService {
-  private readonly logger = new Logger(WebhookService.name);
-  private readonly webhookSecret = process.env.WEBHOOK_SECRET || 'your-webhook-secret';
+export class QueueService implements OnModuleInit, OnModuleDestroy {
+  private queue: any;
+  private readonly logger = new Logger(QueueService.name);
 
-  constructor(
-    @InjectQueue('notification-queue') private notificationQueue: Queue,
-  ) {}
+  constructor(private readonly processor: ProcessorService) {
+    this.queue = new BetterQueue(
+      async (job, done) => {
+        console.log('Processing job:', job);
+
+        try {
+          const result = await this.processor.process(job);
+          console.log('Job success:', job, result);
+          done(null, result);
+        } catch (err) {
+          console.error('Job failed:', job, err);
+          done(err);
+        }
+      },
+      {
+        concurrent: 5,
+        maxRetries: 3,
+        retryDelay: 2000,
+      },
+    );
+  }
+
+  onModuleInit() {
+    this.queue.on('task_finish', (taskId, result) => {
+      this.logger.log(`✅ task ${taskId} finished: ${JSON.stringify(result)}`);
+    });
+    this.queue.on('task_failed', (taskId, err) => {
+      this.logger.error(`❌ task ${taskId} failed: ${err?.message || err}`);
+    });
+  }
+
+  onModuleDestroy() {
+    if (this.queue) {
+      this.queue.destroy(() => {
+        this.logger.log('Queue destroyed and persisted store closed.');
+      });
+    }
+  }
+
+  enqueue(payload: any) {
+    return this.queue.push({ payload });
+  }
 
   async validateWebhook(
     payload: WebhookPayloadDto, 
     signature?: string, 
-    authorization?: string
+    authorization?: string,
   ): Promise<void> {
     // Validate authorization header
     if (authorization) {
@@ -55,6 +108,8 @@ async enqueueNotificationJobs(payload: WebhookPayloadDto): Promise<void> {
     for (const channel of channels) {
         // Build the notification job data
         const notificationJob: NotificationJobDto = {
+        recordId: payload.id,
+        name: `send-${channel}`,
             webhookId: payload.id,
             eventType: payload.event_type,
             channel,
@@ -66,38 +121,13 @@ async enqueueNotificationJobs(payload: WebhookPayloadDto): Promise<void> {
             },
         };
 
-        // Configure job options for the queue (priority, retries, backoff, etc.)
-        const jobOptions = {
-            priority: notificationJob.metadata?.priority || 5,
-            attempts: 3,
-            backoff: {
-                type: 'exponential',
-                delay: 2000,
-            },
-            removeOnComplete: 100,
-            removeOnFail: 50,
-        };
-
-        // Add the job to the queue for the specific channel
-        const jobPromise = this.notificationQueue.add(
-            `send-${channel}`,
-            notificationJob,
-            jobOptions
-        );
-
-        jobPromises.push(jobPromise);
+      this.queue.push(notificationJob);
+      
     }
 
-    // Wait for all jobs to be enqueued
-    await Promise.all(jobPromises);
-    this.logger.log(`Enqueued ${jobPromises.length} notification jobs for webhook: ${payload.id}`);
-}
-
-  private generateSignature(payload: string): string {
-    return crypto
-      .createHmac('sha256', this.webhookSecret)
-      .update(payload)
-      .digest('hex');
+    this.logger.log(
+      `Enqueued ${channels.length} jobs for webhook: ${payload.id}`,
+    );
   }
 
   private getNotificationChannels(eventType: WebhookEventType): NotificationChannel[] {
@@ -105,7 +135,11 @@ async enqueueNotificationJobs(payload: WebhookPayloadDto): Promise<void> {
       case WebhookEventType.POS_SAVE:
         return [NotificationChannel.SMS, NotificationChannel.EMAIL];
       case WebhookEventType.ORDER_CREATE:
-        return [NotificationChannel.SMS, NotificationChannel.EMAIL, NotificationChannel.WHATSAPP];
+        return [
+          NotificationChannel.SMS,
+          NotificationChannel.EMAIL,
+          NotificationChannel.WHATSAPP,
+        ];
       case WebhookEventType.ORDER_UPDATE:
         return [NotificationChannel.EMAIL];
       case WebhookEventType.PAYMENT_COMPLETE:

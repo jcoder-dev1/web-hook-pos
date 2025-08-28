@@ -63,6 +63,8 @@ export class WebhookPayloadDto {
 }
 
 export class NotificationJobDto {
+  name:string
+  recordId:string
   @IsString()
   @IsNotEmpty()
   webhookId: string;

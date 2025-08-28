@@ -19,9 +19,9 @@ export class NodeMailerEmailProvider implements EmailProvider {
   // Mailer_Host= smtp.gmail.com
   constructor() {
     this.transporter = nodemailer.createTransport({
-      host: process.env.SMTP_HOST || 'email-smtp.us-east-1.amazonaws.com', // AWS SES SMTP endpoint or Gmail
+      // host: process.env.SMTP_HOST || 'email-smtp.us-east-1.amazonaws.com', // AWS SES SMTP endpoint or Gmail
       //port: Number(process.env.SMTP_PORT) || 587,
-      //  host: 'smtp.gmail.com',
+      host: 'smtp.gmail.com',
       port: 465,
       secure: true, // true if port is 465
       auth: {
@@ -38,7 +38,7 @@ export class NodeMailerEmailProvider implements EmailProvider {
     subject: string,
     content: string,
     isHtml: boolean = true,
-  ): Promise<any> {
+  ): Promise<boolean> {
     try {
       console.log(to, 'send to users....');
       const mailOptions = {
@@ -52,9 +52,11 @@ export class NodeMailerEmailProvider implements EmailProvider {
 
       const info = await this.transporter.sendMail(mailOptions);
 
+      console.log('Email sent:', info.messageId);
       return info;
     } catch (error) {
-      throw error;
+      console.error('Error sending email:', error);
+      return false;
     }
   }
 }

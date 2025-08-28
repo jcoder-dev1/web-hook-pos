@@ -1,32 +1,51 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { NotificationJobDto, WebhookEventType } from '../dto/webhook-payload.dto';
+import {
+  NotificationJobDto,
+  WebhookEventType,
+} from '../dto/webhook-payload.dto';
+import { NodeMailerEmailProvider } from '../providers/email/nodemailer.provider';
 
 export interface EmailProvider {
-  sendEmail(to: string[], subject: string, content: string, isHtml?: boolean): Promise<boolean>;
+  sendEmail(
+    to: string[],
+    subject: string,
+    content: string,
+    isHtml?: boolean,
+  ): Promise<boolean>;
 }
 
 // Example implementation for SendGrid
 class SendGridEmailProvider implements EmailProvider {
-  async sendEmail(to: string[], subject: string, content: string, isHtml: boolean = true): Promise<boolean> {
+  async sendEmail(
+    to: string[],
+    subject: string,
+    content: string,
+    isHtml: boolean = true,
+  ): Promise<boolean> {
     // Implement SendGrid email sending logic here
     console.log(`Sending email via SendGrid to ${to.join(', ')}`);
     console.log(`Subject: ${subject}`);
     console.log(`Content: ${content}`);
     // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     return true;
   }
 }
 
 // Example implementation for AWS SES
 class AwsSesEmailProvider implements EmailProvider {
-  async sendEmail(to: string[], subject: string, content: string, isHtml: boolean = true): Promise<boolean> {
+  async sendEmail(
+    to: string[],
+    subject: string,
+    content: string,
+    isHtml: boolean = true,
+  ): Promise<boolean> {
     // Implement AWS SES email sending logic here
     console.log(`Sending email via AWS SES to ${to.join(', ')}`);
     console.log(`Subject: ${subject}`);
     console.log(`Content: ${content}`);
     // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 1500));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
     return true;
   }
 }
@@ -38,35 +57,55 @@ export class EmailService {
 
   constructor() {
     // Choose provider based on environment or configuration
-    const providerType = process.env.EMAIL_PROVIDER || 'sendgrid';
+    const providerType = process.env.EMAIL_PROVIDER || 'nodemailer';
     
     switch (providerType.toLowerCase()) {
       case 'aws':
         this.provider = new AwsSesEmailProvider();
         break;
       case 'sendgrid':
+        break;
+      case 'nodemailer':
+        console.log('nodemailer called');
+        this.provider = new NodeMailerEmailProvider();
+        break;
       default:
         this.provider = new SendGridEmailProvider();
         break;
     }
   }
 
-  async sendNotification(job: NotificationJobDto): Promise<void> {
+  async sendNotification(job: NotificationJobDto): Promise<any> {
     const { subject, content } = this.buildEmailContent(job);
     const recipients = this.getRecipients(job);
 
     this.logger.log(`Sending email notification for webhook: ${job.webhookId}`);
 
     try {
-      await this.provider.sendEmail(recipients, subject, content, true);
-      this.logger.log(`Email sent successfully to ${recipients.join(', ')} for webhook: ${job.webhookId}`);
+      const info = await this.provider.sendEmail(
+        recipients,
+        subject,
+        content,
+        true,
+      );
+      this.logger.log(
+        `Email sent successfully to ${recipients.join(', ')} for webhook: ${job.webhookId}`,
+      );
+      return info;
     } catch (error) {
-      this.logger.error(`Failed to send email for webhook: ${job.webhookId}`, error);
+      console.log(error, 'error in email service');
+      this.logger.error(
+        `Failed to send email for webhook: ${job.webhookId}`,
+        error,
+      );
       throw error;
     }
   }
 
-  private buildEmailContent(job: NotificationJobDto): { subject: string; content: string } {
+  private buildEmailContent(job: NotificationJobDto): {
+    subject: string;
+    content: string;
+  } {
     const timestamp = new Date().toLocaleString();
     
     switch (job.eventType) {
@@ -83,7 +122,7 @@ export class EmailService {
             
             <h3>Transaction Details:</h3>
             <pre>${JSON.stringify(job.data, null, 2)}</pre>
-          `
+          `,
         };
       
       case WebhookEventType.ORDER_CREATE:
@@ -102,7 +141,7 @@ export class EmailService {
             
             <h3>Full Order Data:</h3>
             <pre>${JSON.stringify(job.data, null, 2)}</pre>
-          `
+          `,
         };
       
       case WebhookEventType.ORDER_UPDATE:
@@ -117,7 +156,7 @@ export class EmailService {
             
             <h3>Update Details:</h3>
             <pre>${JSON.stringify(job.data, null, 2)}</pre>
-          `
+          `,
         };
       
       case WebhookEventType.PAYMENT_COMPLETE:
@@ -134,7 +173,7 @@ export class EmailService {
             
             <h3>Payment Details:</h3>
             <pre>${JSON.stringify(job.data, null, 2)}</pre>
-          `
+          `,
         };
       
       default:
@@ -148,7 +187,7 @@ export class EmailService {
             
             <h3>Event Data:</h3>
             <pre>${JSON.stringify(job.data, null, 2)}</pre>
-          `
+          `,
         };
     }
   }
@@ -164,14 +203,18 @@ export class EmailService {
           <th style="padding: 8px;">Price</th>
           <th style="padding: 8px;">Total</th>
         </tr>
-        ${items.map(item => `
+        ${items
+          .map(
+            (item) => `
           <tr>
             <td style="padding: 8px;">${item.name || 'N/A'}</td>
             <td style="padding: 8px;">${item.quantity || 'N/A'}</td>
             <td style="padding: 8px;">$${item.price || 'N/A'}</td>
-            <td style="padding: 8px;">$${(item.quantity * item.price) || 'N/A'}</td>
+            <td style="padding: 8px;">$${item.quantity * item.price || 'N/A'}</td>
           </tr>
-        `).join('')}
+        `,
+          )
+          .join('')}
       </table>
     `;
   }
@@ -188,7 +231,8 @@ export class EmailService {
     }
     
     // Default recipients from environment
-    const defaultRecipients = process.env.EMAIL_DEFAULT_RECIPIENTS?.split(',') || [];
+    const defaultRecipients =
+      process.env.EMAIL_DEFAULT_RECIPIENTS?.split(',') || [];
     recipients.push(...defaultRecipients);
     
     return [...new Set(recipients)]; // Remove duplicates
