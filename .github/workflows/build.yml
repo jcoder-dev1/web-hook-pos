@@ -1,95 +1,95 @@
-# name: Build & Deploy NestJS Webhook to EC2 instance
+name: Build & Deploy Webhook (NestJS) to EC2 instance
 
-# on:
-#   push:
-#     branches:
-#       - main
+on:
+  push:
+    branches:
+      - new_tenant
 
-# jobs:
-#   build-and-deploy:
-#     runs-on: ubuntu-latest
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
 
-#     steps:
-#       - name: ⬇️ Checkout Code
-#         uses: actions/checkout@v3
+    steps:
+      - name: ⬇️ Checkout Code
+        uses: actions/checkout@v3
 
-#       - name: ⚙️ Setup Node.js
-#         uses: actions/setup-node@v3
-#         with:
-#           node-version: 20
+      - name: ⚙️ Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
 
-#       - name: 📦 Install Dependencies
-#         run: npm install --legacy-peer-deps
+      - name: 📦 Install Dependencies
+        run: npm ci
 
-#       - name: 🏗️ Build Project
-#         run: npm run build
+      - name: 🏗️ Build Project
+        run: npm run build
 
-#       - name: 📁 Archive Build
-#         run: |
-#           echo "📦 Archiving build files..."
-#           tar -czf app.tar.gz dist node_modules package.json package-lock.json ecosystem.config.js
-#           echo "✅ Archive created: app.tar.gz"
+      - name: 📁 Archive Build
+        run: |
+          echo "📦 Archiving build files..."
+          tar -czf app.tar.gz dist node_modules package.json package-lock.json ecosystem.config.js
+          echo "✅ Archive created: app.tar.gz"
 
-#       - name: 🧠 Add EC2 Host to known_hosts
-#         run: |
-#           echo "🔐 Setting up SSH directory..."
-#           mkdir -p ~/.ssh
-#           chmod 700 ~/.ssh
+      - name: 🧠 Add EC2 Host to known_hosts
+        run: |
+          echo "🔐 Setting up SSH directory..."
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
 
-#           echo "🔍 Testing SSH connectivity..."
-#           if ! ssh-keyscan -H -t rsa 3.110.243.213 2>&1 >/dev/null; then
-#             echo "❌ Failed to scan host key"
-#             exit 1
-#           fi
+          echo "🔍 Testing SSH connectivity..."
+          if ! ssh-keyscan -H -t rsa 3.110.243.213 2>&1 >/dev/null; then
+            echo "❌ Failed to scan host key"
+            exit 1
+          fi
 
-#           echo "📝 Adding host key to known_hosts..."
-#           ssh-keyscan -H -t rsa 3.110.243.213 >> ~/.ssh/known_hosts 2>/dev/null
-#           chmod 644 ~/.ssh/known_hosts
+          echo "📝 Adding host key to known_hosts..."
+          ssh-keyscan -H -t rsa 3.110.243.213 >> ~/.ssh/known_hosts 2>/dev/null
+          chmod 644 ~/.ssh/known_hosts
 
-#           echo "✅ Verifying known_hosts entry..."
-#           if ! ssh-keygen -F 3.110.243.213 >/dev/null; then
-#             echo "❌ Failed to add host to known_hosts"
-#             exit 1
-#           fi
-#           echo "✅ Host successfully added to known_hosts"
+          echo "✅ Verifying known_hosts entry..."
+          if ! ssh-keygen -F 3.110.243.213 >/dev/null; then
+            echo "❌ Failed to add host to known_hosts"
+            exit 1
+          fi
+          echo "✅ Host successfully added to known_hosts"
 
-#       - name: 🏗️ Prepare remote folder
-#         uses: appleboy/ssh-action@v1.0.0
-#         with:
-#           host: 3.110.243.213
-#           username: ${{ secrets.EC2_USER_NAME }}
-#           key: ${{ secrets.EC2_SSH_KEY }}
-#           script: |
-#             mkdir -p /home/dbadmin/pos-web-hook
+      - name: 🏗️ Prepare remote folder
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 3.110.243.213
+          username: ${{ secrets.EC2_USER_NAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            mkdir -p /home/dbadmin/pos-web-hook
 
-#       - name: 🚀 Deploy to EC2 via SCP
-#         uses: appleboy/scp-action@v0.1.4
-#         with:
-#           host: 3.110.243.213
-#           username: ${{ secrets.EC2_USER_NAME }}
-#           key: ${{ secrets.EC2_SSH_KEY }}
-#           source: 'app.tar.gz'
-#           target: '/home/dbadmin/pos-web-hook'
+      - name: 🚀 Deploy to EC2 via SCP
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: 3.110.243.213
+          username: ${{ secrets.EC2_USER_NAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: 'app.tar.gz'
+          target: '/home/dbadmin/pos-web-hook'
 
-#       - name: 🔧 SSH into EC2 and Setup App
-#         uses: appleboy/ssh-action@v1.0.0
-#         with:
-#           host: 3.110.243.213
-#           username: ${{ secrets.EC2_USER_NAME }}
-#           key: ${{ secrets.EC2_SSH_KEY }}
-#           script: |
-#             echo "📂 Navigating to app directory..."
-#             cd /home/dbadmin/pos-web-hook
+      - name: 🔧 SSH into EC2 and Setup App
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 3.110.243.213
+          username: ${{ secrets.EC2_USER_NAME }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            echo "📂 Navigating to app directory..."
+            cd /home/dbadmin/pos-web-hook
 
-#             echo "🧹 Cleaning old build files..."
-#             rm -rf dist node_modules
+            echo "🧹 Cleaning old build files..."
+            rm -rf dist node_modules
 
-#             echo "📦 Extracting new build..."
-#             tar -xzf app.tar.gz --overwrite
+            echo "📦 Extracting new build..."
+            tar -xzf app.tar.gz --overwrite
 
-#             echo "🗑️ Removing archive..."
-#             rm app.tar.gz
+            echo "🗑️ Removing archive..."
+            rm app.tar.gz
 
-#             echo "🔄 Managing PM2 application..."
-#             pm2 restart pos-web-hook
-#             echo "✅✅✅  Deployment done !"
+            echo "🔄 Managing PM2 application..."
+            pm2 restart pos-web-hook
+            echo "✅✅✅  Deployment done !"

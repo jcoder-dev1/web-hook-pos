@@ -3,14 +3,191 @@ import { NotificationJobDto, WebhookEventType } from '../dto/webhook-payload.dto
 
 export interface WhatsappProvider {
   sendMessage(to: string, message: string): Promise<boolean>;
+  sendTemplateMessage?(
+    to: string,
+    payload: {
+      templateName: string;
+      languageCode: string;
+      bodyParams: string[];
+      headerDocument?: { link: string; filename: string };
+    },
+  ): Promise<boolean>;
+}
+
+export interface PowerstextConfig {
+  baseUrl?: string;
+  phoneId: string;
+  bearerToken: string;
+  templateName: string;
+  languageCode?: string;
+  /** Keys from job.data for body parameters in order, e.g. ["invoiceNumber", "date"] */
+  bodyParamKeys?: string[];
+  /** Key in job.data for document link, or static value when headerDocumentLink is set */
+  headerDocumentLink?: string;
+  /** Key in job.data for document filename, or static value when headerDocumentFilename is set */
+  headerDocumentFilename?: string;
+  /** Optional template for when there is no document (text-only, same body params). Use for reliable delivery without 24h rule. */
+  templateNameNoDocument?: string;
+}
+
+// Powerstext RCS/WhatsApp: matches curl POST .../v23.0/{phoneId}/messages (template with header + body)
+const POWERSTEXT_DEFAULT_BASE_URL = 'https://rcs.powerstext.in';
+const POWERSTEXT_DEFAULT_TEMPLATE = 'sale_invoice_25_';
+const POWERSTEXT_DEFAULT_LANGUAGE = 'en';
+const POWERSTEXT_BIZ_CALLBACK = 'DefaultCallback';
+
+class PowerstextWhatsappProvider implements WhatsappProvider {
+  private readonly logger = new Logger(PowerstextWhatsappProvider.name);
+  private readonly debugEnabled =
+    (process.env.WHATSAPP_DEBUG || '').toLowerCase() === 'true';
+
+  constructor(private readonly config: PowerstextConfig) {}
+
+  private maskToken(token: string): string {
+    if (!token) return '';
+    const t = String(token);
+    if (t.length <= 8) return '***';
+    return `${t.slice(0, 4)}***${t.slice(-4)}`;
+  }
+
+  async sendMessage(to: string, message: string): Promise<boolean> {
+    const sanitized = String(message ?? '')
+      .replace(/\r\n|\r|\n|\t/g, ' ')
+      .replace(/\s{5,}/g, '    ');
+    const baseUrl = (this.config.baseUrl || POWERSTEXT_DEFAULT_BASE_URL).replace(/\/$/, '');
+    const url = `${baseUrl}/v23.0/${this.config.phoneId}/messages`;
+    const toDigits = to.replace(/\D/g, '').replace(/^0/, '');
+    const body = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toDigits,
+      type: 'text',
+      text: { body: sanitized },
+    };
+    this.logger.log(
+      `[WhatsApp] Final URL (test in Chrome): ${url}`,
+    );
+    this.logger.log(
+      `[WhatsApp] Request (text) to=${toDigits} body=${JSON.stringify(body)}`,
+    );
+    if (this.debugEnabled) {
+      this.logger.log(
+        `[WHATSAPP_DEBUG] Powerstext text message: url=${url} to=***${toDigits.slice(-4)}`,
+      );
+    }
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.config.bearerToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const responseText = await res.text();
+    this.logger.log(
+      `[Powerstext] sendMessage response status=${res.status} to=***${toDigits.slice(-4)} body=${responseText}`,
+    );
+    if (!res.ok) {
+      throw new Error(`Powerstext WhatsApp failed ${res.status}: ${responseText}`);
+    }
+    this.logger.warn(
+      '[WhatsApp] Plain text messages may not be delivered if the user has not messaged your business in the last 24 hours. Use an approved template for reliable delivery.',
+    );
+    return true;
+  }
+
+  async sendTemplateMessage(
+    to: string,
+    payload: {
+      templateName: string;
+      languageCode: string;
+      bodyParams: string[];
+      headerDocument?: { link: string; filename: string };
+    },
+  ): Promise<boolean> {
+    const baseUrl = (this.config.baseUrl || POWERSTEXT_DEFAULT_BASE_URL).replace(/\/$/, '');
+    const url = `${baseUrl}/v23.0/${this.config.phoneId}/messages`;
+    const toDigits = to.replace(/\D/g, '').replace(/^0/, '');
+    const templateName = payload.templateName || POWERSTEXT_DEFAULT_TEMPLATE;
+    const languageCode = payload.languageCode || POWERSTEXT_DEFAULT_LANGUAGE;
+
+    const components: Array<{ type: string; parameters: unknown[] }> = [];
+    if (payload.headerDocument) {
+      components.push({
+        type: 'header',
+        parameters: [
+          {
+            type: 'document',
+            document: {
+              link: payload.headerDocument.link,
+              filename: payload.headerDocument.filename,
+            },
+          },
+        ],
+      });
+    }
+    const sanitized = payload.bodyParams.map((t) =>
+      String(t ?? '')
+        .replace(/\r\n|\r|\n|\t/g, ' ')
+        .replace(/\s{5,}/g, '    '),
+    );
+    components.push({
+      type: 'body',
+      parameters: sanitized.map((text) => ({ type: 'text', text })),
+    });
+
+    // Exact structure as curl: messaging_product, recipient_type, to, type, template, biz_opaque_callback_data
+    const body = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: toDigits,
+      type: 'template',
+      template: {
+        name: templateName,
+        language: { code: languageCode },
+        components,
+      },
+      biz_opaque_callback_data: POWERSTEXT_BIZ_CALLBACK,
+    };
+
+    this.logger.log(
+      `[WhatsApp] Final URL (test in Chrome): ${url}`,
+    );
+    this.logger.log(
+      `[WhatsApp] Request (template) to=${toDigits} template=${templateName} body=${JSON.stringify(body)}`,
+    );
+    if (this.debugEnabled) {
+      this.logger.log(
+        `[WHATSAPP_DEBUG] Powerstext request: url=${url} phoneId=${this.config.phoneId} token=${this.maskToken(this.config.bearerToken)} template=${templateName} lang=${languageCode}`,
+      );
+      this.logger.log(
+        `[WHATSAPP_DEBUG] Powerstext request body: ${JSON.stringify(body)}`,
+      );
+    }
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.config.bearerToken}`,
+      },
+      body: JSON.stringify(body),
+    });
+    const responseText = await res.text();
+    this.logger.log(
+      `[Powerstext] sendTemplateMessage response status=${res.status} to=***${toDigits.slice(-4)} template=${templateName} body=${responseText}`,
+    );
+    if (!res.ok) {
+      throw new Error(`Powerstext WhatsApp failed ${res.status}: ${responseText}`);
+    }
+    return true;
+  }
 }
 
 // Example implementation for Twilio WhatsApp
 class TwilioWhatsappProvider implements WhatsappProvider {
   async sendMessage(to: string, message: string): Promise<boolean> {
-    // Implement Twilio WhatsApp sending logic here
     console.log(`Sending WhatsApp message via Twilio to ${to}: ${message}`);
-    // Simulate API call
     await new Promise(resolve => setTimeout(resolve, 2000));
     return true;
   }
@@ -19,9 +196,7 @@ class TwilioWhatsappProvider implements WhatsappProvider {
 // Example implementation for WhatsApp Business API
 class WhatsappBusinessProvider implements WhatsappProvider {
   async sendMessage(to: string, message: string): Promise<boolean> {
-    // Implement WhatsApp Business API sending logic here
     console.log(`Sending WhatsApp message via Business API to ${to}: ${message}`);
-    // Simulate API call
     await new Promise(resolve => setTimeout(resolve, 2000));
     return true;
   }
@@ -47,23 +222,217 @@ export class WhatsappService {
     }
   }
 
-  async sendNotification(job: NotificationJobDto): Promise<void> {
-    const message = this.buildMessage(job);
-    const recipients = this.getRecipients(job);
+  private isDebugEnabled(): boolean {
+    return (process.env.WHATSAPP_DEBUG || '').toLowerCase() === 'true';
+  }
 
-    this.logger.log(`Sending WhatsApp notification for webhook: ${job.webhookId}`);
+  private maskRecipient(recipient: string): string {
+    const s = String(recipient || '');
+    const digits = s.replace(/\D/g, '');
+    if (!digits) return '***';
+    if (digits.length <= 4) return '***';
+    return `***${digits.slice(-4)}`;
+  }
+
+  private sanitizeConfig(config: Record<string, unknown>): Record<string, unknown> {
+    const c = config || {};
+    const token = (c.bearerToken as string | undefined) || '';
+    return {
+      ...c,
+      ...(token ? { bearerToken: `${String(token).slice(0, 4)}***${String(token).slice(-4)}` } : {}),
+    };
+  }
+
+  async sendNotification(
+    job: NotificationJobDto,
+    integrationConfig?: { provider: string; config: Record<string, unknown> } | null,
+  ): Promise<void> {
+    const correlationId = job.correlationId ?? job.webhookId;
+    const recipients = this.getRecipients(job);
+    const provider = integrationConfig
+      ? this.getProviderFromConfig(integrationConfig)
+      : this.provider;
+    const config = integrationConfig?.config || {};
+    const useTemplate =
+      integrationConfig?.provider?.toLowerCase() === 'powerstext' &&
+      config.templateName &&
+      Array.isArray(config.bodyParamKeys);
+
+    this.logger.log(
+      `[${correlationId}] Sending WhatsApp (${integrationConfig ? 'DB config' : 'env'}) for webhook: ${job.webhookId}`,
+    );
+    this.logger.log(
+      `[${correlationId}] WhatsApp recipients (count=${recipients.length}): ${recipients.map((r) => this.maskRecipient(r)).join(', ')} | useTemplate=${useTemplate}`,
+    );
+
+    if (this.isDebugEnabled()) {
+      const providerName = integrationConfig?.provider || (process.env.WHATSAPP_PROVIDER || 'twilio');
+      this.logger.log(
+        `[${correlationId}] [WHATSAPP_DEBUG] provider=${providerName} useTemplate=${useTemplate ? 'true' : 'false'} recipients=${recipients
+          .map((r) => this.maskRecipient(r))
+          .join(', ')}`,
+      );
+      if (integrationConfig) {
+        this.logger.log(
+          `[${correlationId}] [WHATSAPP_DEBUG] integration config (sanitized): ${JSON.stringify(
+            this.sanitizeConfig(integrationConfig.config),
+          )}`,
+        );
+      }
+      this.logger.log(
+        `[${correlationId}] [WHATSAPP_DEBUG] job.data keys: ${Object.keys(job.data || {}).join(', ')}`,
+      );
+    }
 
     const sendPromises = recipients.map(async (recipient) => {
       try {
-        await this.provider.sendMessage(recipient, message);
-        this.logger.log(`WhatsApp message sent successfully to ${recipient} for webhook: ${job.webhookId}`);
+        if (useTemplate && provider.sendTemplateMessage) {
+          const data = job.data || {};
+          const bodyParams = (config.bodyParamKeys as string[]).map(
+            (key: string) => String(data[key] ?? ''),
+          );
+          const linkCfg = config.headerDocumentLink as string | undefined;
+          const fnCfg = config.headerDocumentFilename as string | undefined;
+          let headerDoc: { link: string; filename: string } | undefined;
+          if (linkCfg || fnCfg) {
+            let link =
+              linkCfg && (linkCfg.startsWith('http') || linkCfg.startsWith('https'))
+                ? linkCfg
+                : String(data[linkCfg || 'documentLink'] ?? data.documentLink ?? '');
+            let filename =
+              fnCfg && (fnCfg.includes('.') || fnCfg.includes('/'))
+                ? fnCfg
+                : String(data[fnCfg || 'filename'] ?? data.filename ?? data.invoiceNumber ?? '');
+            if (!link && process.env.POWERSTEXT_TEST_DOCUMENT_LINK) {
+              link = process.env.POWERSTEXT_TEST_DOCUMENT_LINK;
+              filename = process.env.POWERSTEXT_TEST_DOCUMENT_FILENAME || data.invoiceNumber || 'document.pdf';
+              this.logger.log(
+                `[${correlationId}] Using test document from env (POWERSTEXT_TEST_DOCUMENT_LINK) to verify WhatsApp sending`,
+              );
+            }
+            if (link) headerDoc = { link, filename: filename || 'document' };
+            // No document link: use no-document template if configured, else plain text.
+            if ((linkCfg || fnCfg) && !headerDoc) {
+              const noDocTemplate = config.templateNameNoDocument as string | undefined;
+              if (noDocTemplate && provider.sendTemplateMessage) {
+                this.logger.log(
+                  `[${correlationId}] No documentLink; sending template "${noDocTemplate}" (invoice: ${data.invoiceNumber ?? '?'})`,
+                );
+                await provider.sendTemplateMessage(recipient, {
+                  templateName: noDocTemplate,
+                  languageCode: (config.languageCode as string) || 'en',
+                  bodyParams,
+                  headerDocument: undefined,
+                });
+              } else {
+                this.logger.log(
+                  `[${correlationId}] No documentLink; sending plain WhatsApp text (invoice: ${data.invoiceNumber ?? '?'}). Set templateNameNoDocument for reliable delivery.`,
+                );
+                const message = this.buildMessage(job);
+                await provider.sendMessage(recipient, message);
+              }
+              this.logger.log(
+                `[${correlationId}] WhatsApp sent to ${this.maskRecipient(recipient)} for webhook: ${job.webhookId}`,
+              );
+              return;
+            }
+          }
+
+          // Template requires DOCUMENT header; only use document template when we have it.
+          if (!headerDoc) {
+            const noDocTemplate = config.templateNameNoDocument as string | undefined;
+            if (noDocTemplate && provider.sendTemplateMessage) {
+              this.logger.log(
+                `[${correlationId}] No document; sending template "${noDocTemplate}" (invoice: ${data.invoiceNumber ?? '?'})`,
+              );
+              await provider.sendTemplateMessage(recipient, {
+                templateName: noDocTemplate,
+                languageCode: (config.languageCode as string) || 'en',
+                bodyParams,
+                headerDocument: undefined,
+              });
+            } else {
+              this.logger.log(
+                `[${correlationId}] No document for template; sending plain WhatsApp text (invoice: ${data.invoiceNumber ?? '?'}). Set templateNameNoDocument for reliable delivery.`,
+              );
+              const message = this.buildMessage(job);
+              await provider.sendMessage(recipient, message);
+            }
+            this.logger.log(
+              `[${correlationId}] WhatsApp sent to ${this.maskRecipient(recipient)} for webhook: ${job.webhookId}`,
+            );
+            return;
+          }
+
+          if (this.isDebugEnabled()) {
+            this.logger.log(
+              `[${correlationId}] [WHATSAPP_DEBUG] templateName=${String(
+                config.templateName ?? '',
+              )} lang=${String(config.languageCode ?? 'en')} bodyParamKeys=${JSON.stringify(
+                config.bodyParamKeys ?? [],
+              )} bodyParams=${JSON.stringify(bodyParams)} headerDoc=${JSON.stringify(
+                headerDoc ?? null,
+              )}`,
+            );
+          }
+
+          await provider.sendTemplateMessage(recipient, {
+            templateName: config.templateName as string,
+            languageCode: (config.languageCode as string) || 'en',
+            bodyParams,
+            headerDocument: headerDoc,
+          });
+        } else {
+          const message = this.buildMessage(job);
+          if (this.isDebugEnabled()) {
+            this.logger.log(
+              `[${correlationId}] [WHATSAPP_DEBUG] sending plain message to=${this.maskRecipient(
+                recipient,
+              )} message=${JSON.stringify(message)}`,
+            );
+          }
+          await provider.sendMessage(recipient, message);
+        }
+        this.logger.log(
+          `[${correlationId}] WhatsApp sent to ${this.maskRecipient(
+            recipient,
+          )} for webhook: ${job.webhookId}`,
+        );
       } catch (error) {
-        this.logger.error(`Failed to send WhatsApp message to ${recipient} for webhook: ${job.webhookId}`, error);
+        this.logger.error(
+          `[${correlationId}] Failed to send WhatsApp to ${this.maskRecipient(
+            recipient,
+          )} for webhook: ${job.webhookId}`,
+          error as any,
+        );
         throw error;
       }
     });
 
     await Promise.all(sendPromises);
+  }
+
+  private getProviderFromConfig(integrationConfig: {
+    provider: string;
+    config: Record<string, unknown>;
+  }): WhatsappProvider {
+    const p = integrationConfig.provider?.toLowerCase();
+    const c = integrationConfig.config || {};
+    if (p === 'powerstext') {
+      return new PowerstextWhatsappProvider({
+        baseUrl: c.baseUrl as string | undefined,
+        phoneId: (c.phoneId as string) || '',
+        bearerToken: (c.bearerToken as string) || '',
+        templateName: (c.templateName as string) || '',
+        languageCode: c.languageCode as string | undefined,
+        bodyParamKeys: c.bodyParamKeys as string[] | undefined,
+        headerDocumentLink: c.headerDocumentLink as string | undefined,
+        headerDocumentFilename: c.headerDocumentFilename as string | undefined,
+        templateNameNoDocument: c.templateNameNoDocument as string | undefined,
+      });
+    }
+    if (p === 'business') return new WhatsappBusinessProvider();
+    return new TwilioWhatsappProvider();
   }
 
   private buildMessage(job: NotificationJobDto): string {
@@ -167,26 +536,34 @@ _System notification received_
       recipients.push(job.data.merchantWhatsapp);
     }
     
-    // Default recipients from environment
-    const defaultRecipients = process.env.WHATSAPP_DEFAULT_RECIPIENTS?.split(',') || [];
+    // Default recipients from environment (e.g. WHATSAPP_DEFAULT_RECIPIENTS=919588623393)
+    const defaultRecipients = (process.env.WHATSAPP_DEFAULT_RECIPIENTS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
     recipients.push(...defaultRecipients);
-    
-    return [...new Set(recipients)]; // Remove duplicates
+
+    const list = [...new Set(recipients)];
+    if (list.length === 0) {
+      this.logger.warn(
+        `[getRecipients] No WhatsApp recipients for job; set WHATSAPP_DEFAULT_RECIPIENTS (e.g. 919588623393) to send to a fallback number`,
+      );
+    }
+    return list; // Remove duplicates
   }
 
   private formatPhoneForWhatsApp(phone: string): string | null {
-    // Remove all non-digit characters
-    const cleanPhone = phone.replace(/\D/g, '');
-    
-    // Add country code if not present (assuming US +1 for example)
+    const cleanPhone = String(phone ?? '').replace(/\D/g, '');
+    if (!cleanPhone) return null;
+    // Already has country code (e.g. 919588623393)
+    if (cleanPhone.length >= 11) return cleanPhone;
+    // 10-digit Indian mobile (starts with 6–9) → prefix 91
+    if (cleanPhone.length === 10 && /^[6-9]/.test(cleanPhone)) return `91${cleanPhone}`;
+    // Other 10-digit → use default country from env or 91
     if (cleanPhone.length === 10) {
-      return `+1${cleanPhone}`;
-    } else if (cleanPhone.length === 11 && cleanPhone.startsWith('1')) {
-      return `+${cleanPhone}`;
-    } else if (cleanPhone.length > 10) {
-      return `+${cleanPhone}`;
+      const defaultCc = process.env.WHATSAPP_DEFAULT_COUNTRY_CODE || '91';
+      return `${defaultCc}${cleanPhone}`;
     }
-    
-    return null; // Invalid phone number
+    return null;
   }
 }

@@ -75,31 +75,45 @@ export class EmailService {
     }
   }
 
-  async sendNotification(job: NotificationJobDto): Promise<any> {
+  async sendNotification(
+    job: NotificationJobDto,
+    integrationConfig?: { provider: string; config: Record<string, unknown> } | null,
+  ): Promise<any> {
     const { subject, content } = this.buildEmailContent(job);
     const recipients = this.getRecipients(job);
+    const provider = integrationConfig
+      ? this.getProviderFromConfig(integrationConfig)
+      : this.provider;
 
-    this.logger.log(`Sending email notification for webhook: ${job.webhookId}`);
+    this.logger.log(
+      `Sending email (${integrationConfig ? 'DB config' : 'env'}) for webhook: ${job.webhookId}`,
+    );
 
     try {
-      const info = await this.provider.sendEmail(
+      const info = await provider.sendEmail(
         recipients,
         subject,
         content,
         true,
       );
       this.logger.log(
-        `Email sent successfully to ${recipients.join(', ')} for webhook: ${job.webhookId}`,
+        `Email sent to ${recipients.join(', ')} for webhook: ${job.webhookId}`,
       );
       return info;
     } catch (error) {
-      console.log(error, 'error in email service');
-      this.logger.error(
-        `Failed to send email for webhook: ${job.webhookId}`,
-        error,
-      );
+      this.logger.error(`Failed to send email for webhook: ${job.webhookId}`, error);
       throw error;
     }
+  }
+
+  private getProviderFromConfig(integrationConfig: {
+    provider: string;
+    config: Record<string, unknown>;
+  }): EmailProvider {
+    const p = integrationConfig.provider?.toLowerCase();
+    if (p === 'aws') return new AwsSesEmailProvider();
+    if (p === 'sendgrid') return new SendGridEmailProvider();
+    return new NodeMailerEmailProvider();
   }
 
   private buildEmailContent(job: NotificationJobDto): {

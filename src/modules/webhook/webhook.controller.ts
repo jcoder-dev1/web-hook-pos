@@ -25,6 +25,7 @@ export class WebhookController {
     @Headers('x-webhook-signature') signature?: string,
     @Headers('authorization') authorization?: string,
   ) {
+    console.log('payload12345', payload);
     this.logger.log(`Received POS webhook: ${payload.id}`);
 
     try {

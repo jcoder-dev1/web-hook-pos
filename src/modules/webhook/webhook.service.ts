@@ -8,12 +8,15 @@ import {
 } from '@nestjs/common';
 
 import { ProcessorService } from './processors/notification.processor';
+import { IntegrationConfigMasterService } from './services/integration-config-master.service';
 import {
   NotificationChannel,
   NotificationJobDto,
   WebhookEventType,
   WebhookPayloadDto,
 } from './dto/webhook-payload.dto';
+import { verifyWebhookSignature } from '../../common/canonical-json.util';
+import { WEBHOOK_TEST_CONFIG } from '../../config/webhook-test.config';
 
 // Correct BetterQueue import
 import BetterQueue from 'better-queue';
@@ -23,7 +26,10 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   private queue: any;
   private readonly logger = new Logger(QueueService.name);
 
-  constructor(private readonly processor: ProcessorService) {
+  constructor(
+    private readonly processor: ProcessorService,
+    private readonly integrationConfigMaster: IntegrationConfigMasterService,
+  ) {
     this.queue = new BetterQueue(
       async (job, done) => {
         console.log('Processing job:', job);
@@ -67,27 +73,37 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   }
 
   async validateWebhook(
-    payload: WebhookPayloadDto, 
-    signature?: string, 
+    payload: WebhookPayloadDto,
+    signature?: string,
     authorization?: string,
   ): Promise<void> {
-    // Validate authorization header
-    if (authorization) {
-      const expectedToken = process.env.WEBHOOK_AUTH_TOKEN || 'your-auth-token';
-      if (authorization !== `Bearer ${expectedToken}`) {
+    const expectedToken =
+      process.env.WEBHOOK_AUTH_TOKEN || WEBHOOK_TEST_CONFIG.WEBHOOK_AUTH_TOKEN;
+    const webhookSecret =
+      process.env.WEBHOOK_SECRET || WEBHOOK_TEST_CONFIG.WEBHOOK_SECRET;
+
+    const hasValidToken =
+      !!expectedToken &&
+      authorization === `Bearer ${expectedToken}`;
+    const hasValidSignature =
+      !!webhookSecret &&
+      !!signature &&
+      verifyWebhookSignature(payload, signature, webhookSecret);
+
+    if (!hasValidToken && !hasValidSignature) {
+      if (!authorization && !signature) {
+        throw new UnauthorizedException(
+          'Missing authentication: provide Authorization Bearer token or X-Webhook-Signature',
+        );
+      }
+      if (authorization && !hasValidToken) {
         throw new UnauthorizedException('Invalid authorization token');
+      }
+      if (signature && !hasValidSignature) {
+        throw new UnauthorizedException('Invalid webhook signature');
       }
     }
 
-    // Validate webhook signature if provided
-    // if (signature) {
-    //   const expectedSignature = this.generateSignature(JSON.stringify(payload));
-    //   if (signature !== expectedSignature) {
-    //     throw new UnauthorizedException('Invalid webhook signature');
-    //   }
-    // }
-
-    // Validate payload structure
     if (!payload.id || !payload.event_type || !payload.data) {
       throw new BadRequestException('Invalid webhook payload structure');
     }
@@ -96,44 +112,60 @@ export class QueueService implements OnModuleInit, OnModuleDestroy {
   }
 
 /**
- * Enqueues notification jobs for each relevant channel based on the webhook event type.
- * @param payload The webhook payload containing event and data.
- */
-async enqueueNotificationJobs(payload: WebhookPayloadDto): Promise<void> {
-    const jobPromises: Promise<any>[] = [];
+ * Enqueues notification jobs only for channels that have an active integration
+ * for this event (from master DB). Falls back to default channels if none configured.
+   */
+  async enqueueNotificationJobs(payload: WebhookPayloadDto): Promise<void> {
+    const mpin = payload.mpin ?? payload.data?.mpin;
+    const companyId = payload.company_id ?? payload.data?.companyId ?? payload.data?.company_id;
+    const branchId = payload.branch_id ?? payload.data?.branchId ?? payload.data?.branch_id ?? null;
+    const correlationId = payload.id ?? `wh-${Date.now()}`;
 
-    // Determine which notification channels to use based on event type
-    const channels = this.getNotificationChannels(payload.event_type);
+    let channelStrings: string[] = [];
+    if (mpin != null && companyId != null) {
+      channelStrings = await this.integrationConfigMaster.getChannelsForEvent(
+        String(mpin),
+        Number(companyId),
+        branchId != null ? Number(branchId) : null,
+        payload.event_type,
+      );
+    }
+    const defaultChannels = this.getNotificationChannels(payload.event_type);
+    const channels: NotificationChannel[] =
+      channelStrings.length > 0
+        ? channelStrings.map((c) => c as NotificationChannel)
+        : (mpin != null && companyId != null ? [] : defaultChannels);
 
     for (const channel of channels) {
-        // Build the notification job data
-        const notificationJob: NotificationJobDto = {
+      const notificationJob: NotificationJobDto = {
         recordId: payload.id,
         name: `send-${channel}`,
-            webhookId: payload.id,
-            eventType: payload.event_type,
-            channel,
-            data: payload.data,
-            metadata: {
-                retryCount: 0,
-                priority: this.getJobPriority(payload.event_type),
-                delay: 0,
-            },
-        };
-
-      this.queue.push(notificationJob);
-      
+        webhookId: payload.id,
+        eventType: payload.event_type,
+        channel,
+        data: payload.data,
+        metadata: {
+          retryCount: 0,
+          priority: this.getJobPriority(payload.event_type),
+          delay: 0,
+        },
+        mpin,
+        companyId,
+        branchId,
+        correlationId,
+      };
+      this.queue.push({ payload: notificationJob });
     }
 
     this.logger.log(
-      `Enqueued ${channels.length} jobs for webhook: ${payload.id}`,
+      `Enqueued ${channels.length} jobs for webhook: ${payload.id} (channels: ${channels.join(', ')})`,
     );
   }
 
   private getNotificationChannels(eventType: WebhookEventType): NotificationChannel[] {
     switch (eventType) {
       case WebhookEventType.POS_SAVE:
-        return [NotificationChannel.SMS, NotificationChannel.EMAIL];
+        return [NotificationChannel.SMS, NotificationChannel.EMAIL, NotificationChannel.WHATSAPP];
       case WebhookEventType.ORDER_CREATE:
         return [
           NotificationChannel.SMS,

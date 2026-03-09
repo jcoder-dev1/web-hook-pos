@@ -1,5 +1,6 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsObject, IsOptional, IsEnum } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsString, IsNotEmpty, IsObject, IsOptional, IsEnum, IsNumber } from 'class-validator';
+import { Type } from 'class-transformer';
 
 export enum WebhookEventType {
   POS_SAVE = 'pos_save',
@@ -60,6 +61,23 @@ export class WebhookPayloadDto {
   @IsString()
   @IsOptional()
   source?: string;
+
+  @ApiPropertyOptional({ description: 'Tenant MPIN for integration config lookup' })
+  @IsOptional()
+  @IsString()
+  mpin?: string;
+
+  @ApiPropertyOptional({ description: 'Company ID for integration config lookup' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  company_id?: number;
+
+  @ApiPropertyOptional({ description: 'Branch ID for integration config lookup' })
+  @IsOptional()
+  @IsNumber()
+  @Type(() => Number)
+  branch_id?: number;
 }
 
 export class NotificationJobDto {
@@ -88,4 +106,17 @@ export class NotificationJobDto {
     priority?: number;
     delay?: number;
   };
+
+  @IsOptional()
+  @IsString()
+  mpin?: string;
+
+  @IsOptional()
+  companyId?: number;
+
+  @IsOptional()
+  branchId?: number;
+
+  @IsOptional()
+  correlationId?: string;
 }

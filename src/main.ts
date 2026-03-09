@@ -2,10 +2,15 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger'; // Importing Swagger tools for API documentation
 import { ValidationPipe } from '@nestjs/common';
+import { GlobalHttpExceptionFilter } from './common/http-exception.filter';
+import { CorrelationIdInterceptor } from './common/correlation-id.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
- 
+
+  app.useGlobalFilters(new GlobalHttpExceptionFilter());
+  app.useGlobalInterceptors(new CorrelationIdInterceptor());
+
   // Configure Swagger for API documentation
   const config = new DocumentBuilder()
     .setTitle('iPlugPOS WebHooks API')

@@ -18,10 +18,13 @@
 //   providers: [AppService],
 // })
 // export class AppModule {}
-import { Module } from '@nestjs/common';
+import { Logger, Module, OnModuleInit } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { WebhookLog } from './modules/webhook/entities/webhook-log.entity';
+import { IntegrationDeliveryLog } from './modules/webhook/entities/integration-delivery-log.entity';
+import { ThirdPartyIntegration } from './modules/webhook/entities/third-party-integration.entity';
+import { IntegrationConfigMasterService } from './modules/webhook/services/integration-config-master.service';
 import { WebhookController } from './modules/webhook/webhook.controller';
 import { ProcessorService } from './modules/webhook/processors/notification.processor';
 import { QueueService } from './modules/webhook/webhook.service';
@@ -29,38 +32,40 @@ import { SmsService } from './modules/webhook/services/sms.service';
 import { EmailService } from './modules/webhook/services/email.service';
 import { WhatsappService } from './modules/webhook/services/whatsapp.service';
 
+/**
+ * Single DB connection to MASTER DB.
+ * - Reads third_party_integrations for config (by mpin, companyId, branchId, channel).
+ * - Writes webhook_logs and integration_delivery_logs for tracing.
+ * Use MASTER_DB_* env vars (fallback to DB_*).
+ */
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
 
-    // TypeORM configuration using ConfigService
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-
       useFactory: (configService: ConfigService) => ({
         type: 'postgres',
-        host: configService.get('DB_HOST'),
-        port: +configService.get('DB_PORT'),
-        username: configService.get('DB_USERNAME'),
-        password: 'Welcome@1q3#',
-        database: configService.get('DB_NAME'),
-        entities: [WebhookLog],
+        host: configService.get('MASTER_DB_HOST') || configService.get('DB_HOST'),
+        port: +(configService.get('MASTER_DB_PORT') || configService.get('DB_PORT') || 5432),
+        username: configService.get('MASTER_DB_USERNAME') || configService.get('DB_USERNAME'),
+        password: 'Welcome@1q3#',        //configService.get('MASTER_DB_PASSWORD') || configService.get('DB_PASSWORD') || '',
+        database: configService.get('MASTER_DB_DATABASE') || configService.get('MASTER_DB_NAME') || configService.get('DB_NAME'),
+        entities: [ThirdPartyIntegration, WebhookLog, IntegrationDeliveryLog],
         synchronize: false,
-
         logging: true,
         autoLoadEntities: true,
-        // Additional PostgreSQL options
         extra: {
-          max: 10, // Maximum number of connections in the pool
-          connectionTimeoutMillis: 2000, // Connection timeout
+          max: 10,
+          connectionTimeoutMillis: 2000,
         },
       }),
       inject: [ConfigService],
     }),
 
-    TypeOrmModule.forFeature([WebhookLog]),
+    TypeOrmModule.forFeature([ThirdPartyIntegration, WebhookLog, IntegrationDeliveryLog]),
   ],
   controllers: [WebhookController],
   providers: [
@@ -69,6 +74,25 @@ import { WhatsappService } from './modules/webhook/services/whatsapp.service';
     SmsService,
     EmailService,
     WhatsappService,
+    IntegrationConfigMasterService,
   ],
 })
-export class AppModule {}
+export class AppModule implements OnModuleInit {
+  private readonly logger = new Logger(AppModule.name);
+
+  constructor(private readonly configService: ConfigService) {}
+
+  onModuleInit() {
+    const whatsappDebug =
+      (this.configService.get<string>('WHATSAPP_DEBUG') ||
+        process.env.WHATSAPP_DEBUG ||
+        '')
+        .toString()
+        .toLowerCase() === 'true';
+
+    // NOTE: Do not log secrets here. This is just a startup indicator.
+    this.logger.log(
+      `Webhook service started (WHATSAPP_DEBUG=${whatsappDebug ? 'true' : 'false'})`,
+    );
+  }
+}

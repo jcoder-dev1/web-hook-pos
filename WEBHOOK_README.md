@@ -42,6 +42,11 @@ cp .env.example .env
 # Edit .env with your configuration
 ```
 
+5. **Database tables**: If using Postgres with `synchronize: false`, create tables by running:
+```bash
+psql -h <host> -U <user> -d <your_webhook_db> -f scripts/sql/001-create-integration_delivery_logs.sql
+```
+
 ## Configuration
 
 ### Environment Variables
@@ -70,6 +75,10 @@ WHATSAPP_DEFAULT_RECIPIENTS=+1234567890,+0987654321
 SMS_PROVIDER=twilio          # or 'aws'
 EMAIL_PROVIDER=sendgrid      # or 'aws'
 WHATSAPP_PROVIDER=twilio     # or 'business'
+
+# Third-party integration config (fetch from main app by company/branch)
+MAIN_APP_URL=http://localhost:3000
+INTEGRATION_CONFIG_API_KEY=your-integration-config-api-key
 ```
 
 ## Usage
@@ -99,6 +108,9 @@ X-Webhook-Signature: sha256-hash (optional)
   "event_type": "pos_save",
   "timestamp": "2024-01-01T12:00:00Z",
   "source": "pos_system",
+  "mpin": "999999",
+  "company_id": 1,
+  "branch_id": 1,
   "data": {
     "transactionId": "TXN_67890",
     "amount": 125.50,
@@ -108,6 +120,8 @@ X-Webhook-Signature: sha256-hash (optional)
   }
 }
 ```
+
+**Optional fields for per-tenant integration config:** Include `mpin`, `company_id`, and `branch_id` (top-level or inside `data`) so the processor can fetch company/branch-specific SMS/Email/WhatsApp config from the main app. If omitted, env-based defaults are used.
 
 #### Test Webhook
 ```
