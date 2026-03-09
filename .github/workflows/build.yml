@@ -3,7 +3,7 @@ name: Build & Deploy Webhook (NestJS) to EC2 instance
 on:
   push:
     branches:
-      - new_tenant
+      - main
 
 jobs:
   build-and-deploy:
