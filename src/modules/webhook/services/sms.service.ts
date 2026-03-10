@@ -5,6 +5,10 @@ export interface SmsProvider {
   sendSms(to: string, message: string): Promise<boolean>;
 }
 
+export interface SmsOtpProvider {
+  sendOtp(to: string, otp: string): Promise<boolean>;
+}
+
 export interface TextGuruConfig {
   baseUrl?: string;
   username: string;
@@ -12,14 +16,19 @@ export interface TextGuruConfig {
   source: string;
   dlttempid?: string;
   messageTemplate?: string;
+  /** DLT template ID for OTP (optional; falls back to dlttempid) */
+  otpDlttempid?: string;
 }
 
-// TextGuru: GET https://www.textguru.in/api/v22.0/?username=...&password=...&source=...&dmobile=...&message=...
+// TextGuru: GET https://www.textguru.in/api/v22.0/?username=...&password=...&source=...&dmobile=...&dlttempid=...&message=...
+const TEXTGURU_DEFAULT_BASE = 'https://www.textguru.in/api/v22.0';
+const TEXTGURU_OTP_MESSAGE_TEMPLATE = 'OTP:#OTP#'; // DLT template; we send message with #OTP# replaced
+
 class TextGuruSmsProvider implements SmsProvider {
   constructor(private readonly config: TextGuruConfig) {}
 
   async sendSms(to: string, message: string): Promise<boolean> {
-    const baseUrl = (this.config.baseUrl || 'https://www.textguru.in/api/v22.0').replace(/\/$/, '');
+    const baseUrl = (this.config.baseUrl || TEXTGURU_DEFAULT_BASE).replace(/\/$/, '');
     const params = new URLSearchParams({
       username: this.config.username,
       password: this.config.password,
@@ -35,6 +44,31 @@ class TextGuruSmsProvider implements SmsProvider {
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`TextGuru SMS failed ${res.status}: ${text}`);
+    }
+    return true;
+  }
+
+  /** Send OTP using DLT template OTP:#OTP#. Uses otpDlttempid or dlttempid. */
+  async sendOtp(to: string, otp: string): Promise<boolean> {
+    const message = TEXTGURU_OTP_MESSAGE_TEMPLATE.replace('#OTP#', String(otp));
+    const baseUrl = (this.config.baseUrl || TEXTGURU_DEFAULT_BASE).replace(/\/$/, '');
+    const dmobile = to.replace(/\D/g, '').replace(/^0/, '');
+    const params = new URLSearchParams({
+      username: this.config.username,
+      password: this.config.password,
+      source: this.config.source,
+      dmobile,
+      message,
+    });
+    const dltId = this.config.otpDlttempid || this.config.dlttempid;
+    if (dltId) {
+      params.set('dlttempid', dltId);
+    }
+    const url = `${baseUrl}/?${params.toString()}`;
+    const res = await fetch(url, { method: 'GET' });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`TextGuru OTP SMS failed ${res.status}: ${text}`);
     }
     return true;
   }
@@ -82,6 +116,26 @@ export class SmsService {
     }
   }
 
+  /**
+   * Send OTP SMS via TextGuru (OTP:#OTP# template). Uses env TEXTGURU_* and TEXTGURU_OTP_DLTTEMPID.
+   */
+  async sendOtp(mobile: string, otp: string): Promise<void> {
+    const username = process.env.TEXTGURU_USERNAME;
+    if (!username) {
+      throw new Error('TEXTGURU_USERNAME is not set; cannot send OTP');
+    }
+    const provider = new TextGuruSmsProvider({
+      baseUrl: process.env.TEXTGURU_BASE_URL || TEXTGURU_DEFAULT_BASE,
+      username,
+      password: process.env.TEXTGURU_PASSWORD || '',
+      source: process.env.TEXTGURU_SOURCE || 'IRUJUL',
+      dlttempid: process.env.TEXTGURU_DLTTEMPID,
+      otpDlttempid: process.env.TEXTGURU_OTP_DLTTEMPID || process.env.TEXTGURU_DLTTEMPID,
+    });
+    await provider.sendOtp(mobile, otp);
+    this.logger.log(`OTP SMS sent to ***${String(mobile).replace(/\D/g, '').slice(-4)}`);
+  }
+
   async sendNotification(
     job: NotificationJobDto,
     integrationConfig?: { provider: string; config: Record<string, unknown> } | null,
@@ -122,6 +176,7 @@ export class SmsService {
         password: (c.password as string) || '',
         source: (c.source as string) || '',
         dlttempid: c.dlttempid as string | undefined,
+        otpDlttempid: (c.otpDlttempid as string) || (c.dlttempid as string) || undefined,
         messageTemplate: c.messageTemplate as string | undefined,
       });
     }
